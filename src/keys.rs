@@ -63,11 +63,14 @@ enum Pending {
 }
 
 impl KeyRouter {
-    /// Whether a prefix or quoted key is waiting for another key.
+    /// Whether a shortcut prefix needs a timeout before forwarding.
+    ///
+    /// A literal quote waits for the next key without a time limit.
     pub fn is_pending(&self) -> bool {
-        self.pending.is_some()
+        matches!(self.pending, Some(Pending::CtrlW(_) | Pending::G(_)))
     }
-    /// Whether the shell should receive the next key literally after `Ctrl-v`.
+
+    /// Whether the plugin should send the next key literally after `Ctrl-v`.
     pub fn is_quoting(&self) -> bool {
         matches!(self.pending, Some(Pending::QuoteNext))
     }
@@ -91,7 +94,7 @@ impl KeyRouter {
             }
             None if is_ctrl(&key, 'v') => {
                 self.pending = Some(Pending::QuoteNext);
-                vec![Effect::Forward(key)]
+                Vec::new()
             }
             None if plain_char(&key) == Some('g') => {
                 self.pending = Some(Pending::G(key));
@@ -105,7 +108,11 @@ impl KeyRouter {
     pub fn timeout(&mut self) -> Vec<Effect> {
         match self.pending.take() {
             Some(Pending::CtrlW(key) | Pending::G(key)) => vec![Effect::Forward(key)],
-            _ => Vec::new(),
+            Some(Pending::QuoteNext) => {
+                self.pending = Some(Pending::QuoteNext);
+                Vec::new()
+            }
+            None => Vec::new(),
         }
     }
 }

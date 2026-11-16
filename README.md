@@ -1,75 +1,88 @@
 # Navi Zellij
 
-Navi nods to navigation, Neovim, and “new” in Indian languages.
+Use familiar Vim keys to move between Neovim windows, Zellij panes, and Zellij tabs. **Navi** evokes navigation, Neovim, and “new” in several Indian languages.
 
-Use Vim window and tab keys across Neovim splits, Zellij panes, and Zellij tabs. The shell shortcuts work without adding personal Zellij keybinds. Your existing Zellij unlock key and other bindings stay in place.
+Navi Zellij has two parts:
+
+| Part | What it does |
+| --- | --- |
+| Zellij WASM plugin | Handles Vim-style shortcuts at a shell prompt. It uses your existing Locked-mode bindings and needs no new personal Zellij keybinds. |
+| Neovim Lua module | Moves within Neovim first. At an outer window or tab edge, it asks Zellij to move instead. |
+
+Install both parts for navigation in Neovim and shell panes. The Neovim module also works when Zellij is not running.
 
 ## Requirements
 
 - Zellij 0.46.0
 - Neovim with `vim.system`
-- Rust with the `wasm32-wasip1` target to build the plugin
+- Rust and the `wasm32-wasip1` target to build the Zellij plugin
 
-The Zellij WASM plugin handles shell panes. Its Neovim Lua companion uses native window and tab navigation first, then calls Zellij at an edge. Install both for navigation across both environments. The Neovim module also works outside Zellij.
+Supported shells are `sh`, `bash`, `zsh`, `fish`, `nu`, `dash`, and `ksh`.
 
 ## Install
 
-From this directory:
+Build the WASM plugin and copy both parts from this repository:
 
 ```sh
 rustup target add wasm32-wasip1
 cargo build --locked --release --target wasm32-wasip1
-install -Dm644 target/wasm32-wasip1/release/navi-zellij.wasm "$HOME/.config/zellij/plugins/navi-zellij.wasm"
-install -Dm644 nvim/lua/navi-zellij.lua "$HOME/.config/nvim/lua/navi-zellij.lua"
+mkdir -p "$HOME/.config/zellij/plugins" "$HOME/.config/nvim/lua"
+cp target/wasm32-wasip1/release/navi-zellij.wasm "$HOME/.config/zellij/plugins/navi-zellij.wasm"
+cp nvim/lua/navi-zellij.lua "$HOME/.config/nvim/lua/navi-zellij.lua"
 ```
 
-Add the Neovim setup call after your existing mappings:
+Load the Neovim module **after** your other mappings:
 
 ```lua
 require('navi-zellij').setup()
 ```
 
-Add the plugin URL to `~/.config/zellij/config.kdl`. If you already have a `load_plugins` block, add the URL inside it. Use the absolute path to the installed WASM file:
+Add the WASM file to `~/.config/zellij/config.kdl`. Replace the example with its **absolute path**. If you already have a `load_plugins` block, add the file URL inside that block.
 
 ```kdl
 load_plugins {
-    "file:/absolute/path/to/.config/zellij/plugins/navi-zellij.wasm"
+    "file:/home/you/.config/zellij/plugins/navi-zellij.wasm"
 }
 ```
 
-Set `default_mode "locked"` in Zellij if you want shell shortcuts available immediately. Keep your own binding for leaving Locked mode. Start a new Zellij session and approve the plugin permissions when prompted.
+For shell shortcuts to be available immediately, set `default_mode "locked"` in Zellij. Keep your own binding for leaving Locked mode. Start a new Zellij session and grant the plugin permissions when prompted.
 
 ## Keys
 
-| Focus | Keys | Action |
+| Where | Keys | Result |
 | --- | --- | --- |
-| Neovim | `Ctrl-w h/j/k/l` | Move between Neovim windows; cross into a Zellij pane at an edge |
-| Neovim | `gt`, `gT` | Move between Neovim tabs; cross into Zellij tabs at an edge |
-| Shell | `Ctrl-w h/j/k/l` | Focus a Zellij pane |
+| Neovim | `Ctrl-w h/j/k/l` | Move between Neovim windows, then into a Zellij pane at an edge |
+| Neovim | `gt`, `gT` | Move between Neovim tabs, then into a Zellij tab at an edge |
+| Shell | `Ctrl-w h/j/k/l` | Focus the Zellij pane in that direction |
 | Shell | `Ctrl-w s/v` | Split below/right |
 | Shell | `Ctrl-w c` | Close the focused Zellij pane |
 | Shell | `Ctrl-w w/W/p` | Focus the next/previous/last pane |
-| Shell | `Ctrl-w +/-/</>` | Grow, shrink, grow right, shrink right |
-| Shell | `gt`, `gT` | Next/previous Zellij tab |
-| Shell | `Ctrl-v g t`, `Ctrl-v g T` | Type literal `gt` or `gT` |
+| Shell | `Ctrl-w +/-/</>` | Resize the focused pane |
+| Shell | `gt`, `gT` | Go to the next/previous Zellij tab |
+| Shell | `Ctrl-v g t`, `Ctrl-v g T` | Type `gt` or `gT` literally |
+| Shell | `Ctrl-v Ctrl-v` | Send one native `Ctrl-v` to the shell |
 
-Other Neovim `Ctrl-w` commands retain their native behavior. In particular, `Ctrl-w c` in Neovim's last window follows Neovim's own behavior. Neovim window and tab movement accepts counts; a numbered `gt` selects that Neovim tab.
+The first `Ctrl-v` is Navi Zellij's literal-key escape while shell shortcuts are active. Press it twice for the shell's own `Ctrl-v` behavior, such as paste in fish.
 
-## Input behavior
+Only the listed Neovim mappings are added. Other `Ctrl-w` commands keep their native Neovim behavior; in particular, `Ctrl-w c` in Neovim's last window follows Neovim's safe refusal. Counts work within Neovim; crossing a Zellij edge performs one Zellij move. A numbered `gt` selects that Neovim tab.
 
-The Zellij plugin intercepts shell keys only in Locked mode with one attached client. It forwards ordinary keys and runs your configured Locked-mode Zellij bindings. It releases input to Neovim and other foreground programs. If Zellij cannot identify the focused command, or if multiple clients attach, shell shortcuts pause until the situation is clear again.
+## When shell shortcuts are active
 
-The plugin waits up to 180 ms after a lone `g` or `Ctrl-w` to see whether a shortcut follows. Unrecognized sequences are forwarded in order. At a shell prompt, `gt` and `gT` always switch Zellij tabs; use the literal escape in the table to type them.
+The Zellij plugin handles input only in Locked mode, with one attached client focused on a recognized shell. Your existing Locked-mode bindings take priority. When Zellij identifies Neovim or another foreground program, interception stops. If no command can be resolved, shell shortcuts pause.
+
+Zellij may report the pane’s shell when it cannot inspect a foreground program. In that case, Navi Zellij can still interpret shell shortcuts while that program is running.
+
+Navi Zellij waits up to 180 ms after `g` or `Ctrl-w` for a second key. A lone prefix or an unrecognized sequence is sent to the shell. At a shell prompt, `gt` and `gT` switch Zellij tabs, so use the literal escape above when you need to type those characters.
+
+The plugin requests permission to read and change Zellij state, intercept keys, send keys to the pane, and run your existing bindings. It does not change your Zellij configuration.
 
 ## Verify
 
 ```sh
 cargo test --locked
-nvim --headless -u NONE -l tests/nvim_navigation.lua
+nvim --headless -u NONE -i NONE -l tests/nvim_navigation.lua
 zellij setup --check
 ```
-
-The plugin requests permissions to read and change Zellij state, intercept input, send ordinary keys back to the pane, and execute your existing bindings. It does not request permission to reconfigure Zellij.
 
 ## License
 

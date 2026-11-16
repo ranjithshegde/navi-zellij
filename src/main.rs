@@ -35,11 +35,25 @@ impl NaviZellij {
 
     /// Enable interception only for one known shell client in Locked mode.
     fn update_clients(&mut self, clients: Vec<ClientInfo>) {
+        // Zellij labels its normal default shell as N/A. Query the live command
+        // before deciding whether that pane is safe to intercept.
+        let resolved_command = clients
+            .first()
+            .filter(|client| {
+                self.permission_granted
+                    && clients.len() == 1
+                    && self
+                        .mode
+                        .as_ref()
+                        .is_some_and(|m| m.mode == InputMode::Locked)
+                    && client.running_command == "N/A"
+            })
+            .and_then(|client| get_pane_running_command(client.pane_id).ok());
         let ready = self.permission_granted
-            && self
-                .mode
-                .as_ref()
-                .is_some_and(|m| m.session_name.is_some() && should_intercept(m.mode, &clients));
+            && self.mode.as_ref().is_some_and(|m| {
+                m.session_name.is_some()
+                    && should_intercept(m.mode, &clients, resolved_command.as_deref())
+            });
         if !ready {
             self.stop();
             return;
