@@ -1,8 +1,9 @@
-//! Parse shell key sequences into Zellij actions or keys to forward.
+//! Parse terminal key sequences into Zellij actions or keys to forward.
 //!
-//! Prefixes are buffered so an incomplete `Ctrl-w` or `g` can be sent to the shell
-//! after the plugin timer expires.
+//! In both profiles, an incomplete `Ctrl-w` returns to the program after a
+//! short timer. Shells also buffer `g` for `gt` and `gT`.
 
+use crate::state::InputProfile;
 use zellij_tile::prelude::{BareKey, Direction, KeyModifier, KeyWithModifier};
 
 /// Resize requests that correspond to supported Vim window commands.
@@ -44,16 +45,22 @@ pub enum NavAction {
 /// The parser result: forward a key unchanged or perform a Zellij action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
-    /// Send the original key to the shell pane.
+    /// Send the original key to the focused terminal pane.
     Forward(KeyWithModifier),
     /// Ask Zellij to perform a parsed navigation command.
     Action(NavAction),
 }
 
-/// Stateful parser for shell-side `Ctrl-w`, `gt`, and `gT` sequences.
-#[derive(Default)]
+/// Stateful parser for terminal `Ctrl-w` commands and shell-only tab shortcuts.
 pub struct KeyRouter {
     pending: Option<Pending>,
+    profile: InputProfile,
+}
+
+impl Default for KeyRouter {
+    fn default() -> Self {
+        Self::for_profile(InputProfile::Shell)
+    }
 }
 
 enum Pending {
@@ -63,6 +70,14 @@ enum Pending {
 }
 
 impl KeyRouter {
+    /// Start with the shortcuts appropriate for a shell or another app.
+    pub fn for_profile(profile: InputProfile) -> Self {
+        Self {
+            pending: None,
+            profile,
+        }
+    }
+
     /// Whether a shortcut prefix needs a timeout before forwarding.
     ///
     /// A literal quote waits for the next key without a time limit.
@@ -92,11 +107,11 @@ impl KeyRouter {
                 self.pending = Some(Pending::CtrlW(key));
                 Vec::new()
             }
-            None if is_ctrl(&key, 'v') => {
+            None if self.profile == InputProfile::Shell && is_ctrl(&key, 'v') => {
                 self.pending = Some(Pending::QuoteNext);
                 Vec::new()
             }
-            None if plain_char(&key) == Some('g') => {
+            None if self.profile == InputProfile::Shell && plain_char(&key) == Some('g') => {
                 self.pending = Some(Pending::G(key));
                 Vec::new()
             }

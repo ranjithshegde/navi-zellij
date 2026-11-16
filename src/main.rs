@@ -1,7 +1,8 @@
-//! Headless Zellij plugin that routes shell shortcuts through the key parser.
+//! Headless Zellij plugin that routes terminal shortcuts through the key parser.
 
 use navi_zellij::{
-    is_pairable_terminal, parse_request, should_intercept, Effect, KeyRouter, NavAction,
+    is_pairable_terminal, needs_command_lookup, parse_editor_signal, parse_request,
+    profile_for_client, EditorRegistry, EditorSignal, Effect, InputProfile, KeyRouter, NavAction,
     PairRegistry, PairRequest, ResizeAction,
 };
 use std::collections::{BTreeMap, HashSet};
@@ -10,7 +11,7 @@ use zellij_tile::prelude::*;
 
 /// Seconds between client and foreground-command refreshes.
 const POLL: f64 = 0.4;
-/// Seconds to wait for the second key of a shell shortcut.
+/// Seconds to wait for the second key of a shortcut.
 const PREFIX: f64 = 0.18;
 
 /// Plugin state for the focused pane, permission grant, and buffered prefix.
@@ -18,11 +19,13 @@ const PREFIX: f64 = 0.18;
 struct NaviZellij {
     mode: Option<ModeInfo>,
     focused_pane: Option<PaneId>,
+    profile: Option<InputProfile>,
     intercepting: bool,
     permission_granted: bool,
     router: KeyRouter,
     pending_since: Option<Instant>,
     pairs: PairRegistry,
+    editors: EditorRegistry,
 }
 
 impl NaviZellij {
@@ -33,14 +36,14 @@ impl NaviZellij {
         }
         self.intercepting = false;
         self.focused_pane = None;
+        self.profile = None;
         self.router = KeyRouter::default();
         self.pending_since = None;
     }
 
-    /// Enable interception only for one known shell client in Locked mode.
+    /// Choose shell or app shortcuts for one known terminal client in Locked mode.
     fn update_clients(&mut self, clients: Vec<ClientInfo>) {
-        // Zellij labels its normal default shell as N/A. Query the live command
-        // before deciding whether that pane is safe to intercept.
+        // A shell or N/A label may hide the actual foreground application.
         let resolved_command = clients
             .first()
             .filter(|client| {
@@ -50,22 +53,34 @@ impl NaviZellij {
                         .mode
                         .as_ref()
                         .is_some_and(|m| m.mode == InputMode::Locked)
-                    && client.running_command == "N/A"
+                    && needs_command_lookup(&client.running_command)
             })
             .and_then(|client| get_pane_running_command(client.pane_id).ok());
-        let ready = self.permission_granted
-            && self.mode.as_ref().is_some_and(|m| {
-                m.session_name.is_some()
-                    && should_intercept(m.mode, &clients, resolved_command.as_deref())
+        let profile = self
+            .mode
+            .as_ref()
+            .filter(|mode| self.permission_granted && mode.session_name.is_some())
+            .and_then(|mode| {
+                let editor_active = clients.first().is_some_and(|client| {
+                    matches!(client.pane_id, PaneId::Terminal(id) if self.editors.contains(id))
+                });
+                profile_for_client(
+                    mode.mode,
+                    &clients,
+                    resolved_command.as_deref(),
+                    editor_active,
+                )
             });
-        if !ready {
+        let Some(profile) = profile else {
             self.stop();
             return;
-        }
+        };
         let pane = clients[0].pane_id;
-        if self.focused_pane != Some(pane) {
+        if self.focused_pane != Some(pane) || self.profile != Some(profile) {
             self.stop();
             self.focused_pane = Some(pane);
+            self.profile = Some(profile);
+            self.router = KeyRouter::for_profile(profile);
         }
         if !self.intercepting {
             intercept_key_presses();
@@ -109,7 +124,7 @@ impl NaviZellij {
             .collect()
     }
 
-    /// Focus a shell pane's partner, or preserve native last-pane behavior.
+    /// Focus a paired editor, or preserve native last-pane behavior.
     fn focus_last_or_pair(&mut self) {
         if let Some(PaneId::Terminal(current)) = self.focused_pane {
             if let Some(partner) = self.pairs.available_partner(current, |id| {
@@ -162,7 +177,7 @@ impl NaviZellij {
         }
     }
 
-    /// Give configured Zellij bindings priority, then parse shell shortcuts.
+    /// Give configured Zellij bindings priority, then parse terminal shortcuts.
     fn on_key(&mut self, key: KeyWithModifier) {
         if !self.intercepting || self.focused_pane.is_none() {
             return;
@@ -248,6 +263,13 @@ impl ZellijPlugin for NaviZellij {
                 list_clients();
             }
             Event::PaneUpdate(manifest) => {
+                let terminals: HashSet<_> = manifest
+                    .panes
+                    .values()
+                    .flatten()
+                    .filter(|pane| !pane.is_plugin)
+                    .map(|pane| pane.id)
+                    .collect();
                 let live: HashSet<_> = manifest
                     .panes
                     .values()
@@ -256,6 +278,7 @@ impl ZellijPlugin for NaviZellij {
                     .map(|pane| pane.id)
                     .collect();
                 self.pairs.retain_live(&live);
+                self.editors.retain_live(&terminals);
                 list_clients();
             }
             Event::TabUpdate(_) => list_clients(),
@@ -286,7 +309,7 @@ impl ZellijPlugin for NaviZellij {
     }
 
     fn pipe(&mut self, message: PipeMessage) -> bool {
-        if message.name != "navi-zellij-pair" {
+        if message.name != "navi-zellij-pair" && message.name != "navi-zellij-editor" {
             return false;
         }
         let PipeSource::Cli(ref pipe_id) = message.source else {
@@ -295,10 +318,31 @@ impl ZellijPlugin for NaviZellij {
         let Some(payload) = message.payload.as_deref() else {
             return false;
         };
-        let result = parse_request(payload).and_then(|request| {
-            let live = self.live_ids_for(request);
-            self.pairs.apply(request, &live)
-        });
+        let result = if message.name == "navi-zellij-pair" {
+            parse_request(payload).and_then(|request| {
+                let live = self.live_ids_for(request);
+                self.pairs.apply(request, &live)
+            })
+        } else {
+            parse_editor_signal(payload).and_then(|signal| {
+                let pane_id = match &signal {
+                    EditorSignal::Enter { pane_id, .. } | EditorSignal::Leave { pane_id, .. } => {
+                        *pane_id
+                    }
+                };
+                if matches!(signal, EditorSignal::Enter { .. })
+                    && get_pane_info(PaneId::Terminal(pane_id)).is_none()
+                {
+                    return Err("pane is no longer available");
+                }
+                self.editors.apply(signal);
+                if self.focused_pane == Some(PaneId::Terminal(pane_id)) {
+                    self.stop();
+                    list_clients();
+                }
+                Ok("ok\n".into())
+            })
+        };
         match result {
             Ok(response) => {
                 cli_pipe_output(pipe_id, &response);

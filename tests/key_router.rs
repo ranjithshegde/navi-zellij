@@ -1,4 +1,4 @@
-use navi_zellij::{Direction, Effect, KeyRouter, NavAction, ResizeAction};
+use navi_zellij::{Direction, Effect, InputProfile, KeyRouter, NavAction, ResizeAction};
 use zellij_tile::prelude::KeyWithModifier;
 
 fn key(value: &str) -> KeyWithModifier {
@@ -101,4 +101,22 @@ fn incomplete_and_unknown_prefixes_reach_the_shell_in_order() {
         router.handle(key("x")),
         vec![Effect::Forward(key("Ctrl w")), Effect::Forward(key("x"))]
     );
+}
+
+#[test]
+fn app_profile_navigates_with_ctrl_w_but_passes_text_and_paste_keys() {
+    let mut router = KeyRouter::for_profile(InputProfile::App);
+    assert_eq!(router.handle(key("g")), vec![Effect::Forward(key("g"))]);
+    assert_eq!(router.handle(key("t")), vec![Effect::Forward(key("t"))]);
+    assert_eq!(
+        router.handle(key("Ctrl v")),
+        vec![Effect::Forward(key("Ctrl v"))],
+    );
+    assert!(router.handle(key("Ctrl w")).is_empty());
+    assert_eq!(
+        router.handle(key("h")),
+        vec![Effect::Action(NavAction::Focus(Direction::Left))],
+    );
+    assert!(router.handle(key("Ctrl w")).is_empty());
+    assert_eq!(router.timeout(), vec![Effect::Forward(key("Ctrl w"))]);
 }

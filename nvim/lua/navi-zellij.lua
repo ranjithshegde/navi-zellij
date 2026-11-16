@@ -13,6 +13,7 @@
 ---@class NaviZellij.Options
 ---@field run? fun(args: string[]) Override the asynchronous Zellij command runner.
 ---@field exec? fun(args: string[], callback: fun(result: NaviZellij.CommandResult)) Override the CLI runner used by paired-pane commands.
+---@field signal? fun(args: string[]): NaviZellij.CommandResult Override the synchronous editor activity runner.
 ---@field in_zellij? fun(): boolean Override Zellij session detection.
 
 ---@class NaviZellij
@@ -46,11 +47,37 @@ end
 ---@type fun(args: string[], callback: fun(result: NaviZellij.CommandResult))
 local exec = default_exec
 
+--- Wait for Zellij to acknowledge an editor activity change.
+---@param args string[]
+---@return NaviZellij.CommandResult
+local function default_signal(args)
+    return vim.system(args, { text = true }):wait(1000)
+end
+---@type fun(args: string[]): NaviZellij.CommandResult
+local signal = default_signal
+
 local function default_in_zellij()
     return vim.env.ZELLIJ ~= nil or vim.env.ZELLIJ_SESSION_NAME ~= nil
 end
 ---@type fun(): boolean
 local in_zellij = default_in_zellij
+
+-- Fixed-width monotonic start time lets the WASM plugin reject older instances.
+local editor_instance = string.format('%020d:%010d', vim.uv.hrtime(), vim.fn.getpid())
+local editor_sequence = 0
+
+--- Tell the Zellij plugin whether this Neovim process owns its terminal pane.
+---@param action 'enter'|'leave'
+local function signal_editor(action)
+    local id = tonumber(vim.env.ZELLIJ_PANE_ID)
+    if not in_zellij() or not id or id < 0 or id % 1 ~= 0 then
+        return
+    end
+    editor_sequence = editor_sequence + 1
+    local payload = string.format('v1 %s %d %s %d', action, id, editor_instance, editor_sequence)
+    -- A failed signal is harmless: the plugin also checks the foreground command.
+    pcall(signal, { 'zellij', 'pipe', '--name', 'navi-zellij-editor', '--', payload })
+end
 
 local direction_names = { h = 'left', j = 'down', k = 'up', l = 'right' }
 
@@ -92,10 +119,7 @@ function M.pair()
     end
     exec({ 'zellij', 'action', 'list-panes', '--all', '--json' }, function(result)
         if result.code ~= 0 then
-            vim.notify(
-                'Navi Zellij: could not list panes: ' .. vim.trim(result.stderr or ''),
-                vim.log.levels.WARN
-            )
+            vim.notify('Navi Zellij: could not list panes: ' .. vim.trim(result.stderr or ''), vim.log.levels.WARN)
             return
         end
         local ok, panes = pcall(vim.json.decode, result.stdout or '')
@@ -124,12 +148,7 @@ function M.pair()
         vim.ui.select(choices, {
             prompt = 'Pair with Zellij pane:',
             format_item = function(pane)
-                return string.format(
-                    '%s / %s (terminal_%d)',
-                    pane.tab_name or '?',
-                    pane.title or '?',
-                    pane.id
-                )
+                return string.format('%s / %s (terminal_%d)', pane.tab_name or '?', pane.title or '?', pane.id)
             end,
         }, function(pane)
             if not pane then
@@ -137,10 +156,7 @@ function M.pair()
             end
             pipe_request(string.format('v1 pair %d %d', editor, pane.id), function(response)
                 if response == 'ok' then
-                    vim.notify(
-                        string.format('Navi Zellij: Paired with terminal_%d', pane.id),
-                        vim.log.levels.INFO
-                    )
+                    vim.notify(string.format('Navi Zellij: Paired with terminal_%d', pane.id), vim.log.levels.INFO)
                 else
                     vim.notify('Navi Zellij: unexpected pair response', vim.log.levels.WARN)
                 end
@@ -243,7 +259,30 @@ function M.setup(opts)
     opts = opts or {}
     run = opts.run or default_run
     exec = opts.exec or default_exec
+    signal = opts.signal or default_signal
     in_zellij = opts.in_zellij or default_in_zellij
+    local editor_events = vim.api.nvim_create_augroup('NaviZellijEditor', { clear = true })
+    vim.api.nvim_create_autocmd('VimEnter', {
+        group = editor_events,
+        callback = function()
+            signal_editor('enter')
+        end,
+    })
+    vim.api.nvim_create_autocmd({ 'VimLeavePre', 'VimSuspend' }, {
+        group = editor_events,
+        callback = function()
+            signal_editor('leave')
+        end,
+    })
+    vim.api.nvim_create_autocmd('VimResume', {
+        group = editor_events,
+        callback = function()
+            signal_editor('enter')
+        end,
+    })
+    if vim.v.vim_did_enter == 1 then
+        signal_editor('enter')
+    end
     for direction in pairs(direction_names) do
         vim.keymap.set('n', '<C-w>' .. direction, function()
             M.navigate_window(direction, vim.v.count1)
@@ -264,16 +303,8 @@ function M.setup(opts)
         M.pair,
         { desc = 'Pair this Neovim pane with a Zellij pane', force = true }
     )
-    vim.api.nvim_create_user_command(
-        'NaviJump',
-        M.jump,
-        { desc = 'Jump to the paired Zellij pane', force = true }
-    )
-    vim.api.nvim_create_user_command(
-        'NaviUnpair',
-        M.unpair,
-        { desc = 'Remove this Neovim pane pair', force = true }
-    )
+    vim.api.nvim_create_user_command('NaviJump', M.jump, { desc = 'Jump to the paired Zellij pane', force = true })
+    vim.api.nvim_create_user_command('NaviUnpair', M.unpair, { desc = 'Remove this Neovim pane pair', force = true })
 end
 
 return M
