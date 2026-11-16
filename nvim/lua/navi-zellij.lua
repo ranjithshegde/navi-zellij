@@ -1,12 +1,18 @@
---- Vim-style navigation between Neovim windows and Zellij panes or tabs.
---- The module uses Neovim navigation first and calls Zellij only at an edge.
+--- Vim-style navigation and paired-pane jumps between Neovim and Zellij.
+--- Window and tab navigation stays inside Neovim until it reaches an edge.
 ---@module 'navi-zellij'
 
 ---@alias NaviZellij.WindowDirection 'h'|'j'|'k'|'l'
 ---@alias NaviZellij.TabDirection 'next'|'previous'
 
+---@class NaviZellij.CommandResult
+---@field code integer
+---@field stdout string
+---@field stderr string
+
 ---@class NaviZellij.Options
 ---@field run? fun(args: string[]) Override the asynchronous Zellij command runner.
+---@field exec? fun(args: string[], callback: fun(result: NaviZellij.CommandResult)) Override the CLI runner used by paired-pane commands.
 ---@field in_zellij? fun(): boolean Override Zellij session detection.
 
 ---@class NaviZellij
@@ -26,12 +32,166 @@ end
 
 ---@type fun(args: string[])
 local run = default_run
----@type fun(): boolean
-local in_zellij = function()
+
+--- Run a Zellij command and return its exit status and output on the UI thread.
+---@param args string[]
+---@param callback fun(result: NaviZellij.CommandResult)
+local function default_exec(args, callback)
+    vim.system(args, {}, function(result)
+        vim.schedule(function()
+            callback(result)
+        end)
+    end)
+end
+---@type fun(args: string[], callback: fun(result: NaviZellij.CommandResult))
+local exec = default_exec
+
+local function default_in_zellij()
     return vim.env.ZELLIJ ~= nil or vim.env.ZELLIJ_SESSION_NAME ~= nil
 end
+---@type fun(): boolean
+local in_zellij = default_in_zellij
 
 local direction_names = { h = 'left', j = 'down', k = 'up', l = 'right' }
+
+--- Return the terminal ID of this Neovim pane, or explain why pairing is unavailable.
+---@return integer?
+local function editor_pane_id()
+    local id = tonumber(vim.env.ZELLIJ_PANE_ID)
+    if not in_zellij() or not id or id < 0 or id % 1 ~= 0 then
+        vim.notify('Navi Zellij: paired panes require a Zellij terminal pane', vim.log.levels.WARN)
+        return nil
+    end
+    return id
+end
+
+--- Run a named pipe request and pass its acknowledged response to a callback.
+---@param payload string
+---@param callback fun(response: string)
+local function pipe_request(payload, callback)
+    exec({ 'zellij', 'pipe', '--name', 'navi-zellij-pair', '--', payload }, function(result)
+        local response = vim.trim(result.stdout or '')
+        if result.code ~= 0 or response == '' or response:match('^error:') then
+            local detail = response ~= '' and response or vim.trim(result.stderr or '')
+            vim.notify(
+                'Navi Zellij: pair request failed' .. (detail ~= '' and (': ' .. detail) or ''),
+                vim.log.levels.WARN
+            )
+            return
+        end
+        callback(response)
+    end)
+end
+
+--- Choose a live Zellij terminal pane and pair it with this Neovim pane.
+---@return nil
+function M.pair()
+    local editor = editor_pane_id()
+    if not editor then
+        return
+    end
+    exec({ 'zellij', 'action', 'list-panes', '--all', '--json' }, function(result)
+        if result.code ~= 0 then
+            vim.notify(
+                'Navi Zellij: could not list panes: ' .. vim.trim(result.stderr or ''),
+                vim.log.levels.WARN
+            )
+            return
+        end
+        local ok, panes = pcall(vim.json.decode, result.stdout or '')
+        if not ok or type(panes) ~= 'table' then
+            vim.notify('Navi Zellij: invalid pane list from Zellij', vim.log.levels.WARN)
+            return
+        end
+        local choices = {}
+        for _, pane in ipairs(panes) do
+            if
+                type(pane.id) == 'number'
+                and pane.id ~= editor
+                and not pane.is_plugin
+                and not pane.exited
+                and not pane.is_held
+                and not pane.is_suppressed
+                and pane.is_selectable
+            then
+                table.insert(choices, pane)
+            end
+        end
+        if #choices == 0 then
+            vim.notify('Navi Zellij: no available terminal panes to pair', vim.log.levels.INFO)
+            return
+        end
+        vim.ui.select(choices, {
+            prompt = 'Pair with Zellij pane:',
+            format_item = function(pane)
+                return string.format(
+                    '%s / %s (terminal_%d)',
+                    pane.tab_name or '?',
+                    pane.title or '?',
+                    pane.id
+                )
+            end,
+        }, function(pane)
+            if not pane then
+                return
+            end
+            pipe_request(string.format('v1 pair %d %d', editor, pane.id), function(response)
+                if response == 'ok' then
+                    vim.notify(
+                        string.format('Navi Zellij: Paired with terminal_%d', pane.id),
+                        vim.log.levels.INFO
+                    )
+                else
+                    vim.notify('Navi Zellij: unexpected pair response', vim.log.levels.WARN)
+                end
+            end)
+        end)
+    end)
+end
+
+--- Jump to this Neovim pane's current Zellij partner.
+---@return nil
+function M.jump()
+    local editor = editor_pane_id()
+    if not editor then
+        return
+    end
+    pipe_request(string.format('v1 get %d', editor), function(response)
+        if response == 'none' then
+            vim.notify('Navi Zellij: no pair; use :NaviPair', vim.log.levels.INFO)
+            return
+        end
+        local partner = response:match('^pane (%d+)$')
+        if not partner then
+            vim.notify('Navi Zellij: unexpected pair response', vim.log.levels.WARN)
+            return
+        end
+        exec({ 'zellij', 'action', 'focus-pane-id', 'terminal_' .. partner }, function(result)
+            if result.code ~= 0 then
+                vim.notify(
+                    'Navi Zellij: could not focus paired pane: ' .. vim.trim(result.stderr or ''),
+                    vim.log.levels.WARN
+                )
+            end
+        end)
+    end)
+end
+
+--- Remove the pair associated with this Neovim pane.
+---@return nil
+function M.unpair()
+    local editor = editor_pane_id()
+    if not editor then
+        return
+    end
+    pipe_request(string.format('v1 unpair %d', editor), function(response)
+        if response == 'ok' then
+            vim.notify('Navi Zellij: Unpaired', vim.log.levels.INFO)
+        else
+            vim.notify('Navi Zellij: unexpected unpair response', vim.log.levels.WARN)
+        end
+    end)
+end
 
 --- Move through Neovim windows, then across a Zellij pane boundary.
 ---@param direction NaviZellij.WindowDirection
@@ -82,9 +242,8 @@ end
 function M.setup(opts)
     opts = opts or {}
     run = opts.run or default_run
-    in_zellij = opts.in_zellij or function()
-        return vim.env.ZELLIJ ~= nil or vim.env.ZELLIJ_SESSION_NAME ~= nil
-    end
+    exec = opts.exec or default_exec
+    in_zellij = opts.in_zellij or default_in_zellij
     for direction in pairs(direction_names) do
         vim.keymap.set('n', '<C-w>' .. direction, function()
             M.navigate_window(direction, vim.v.count1)
@@ -100,6 +259,21 @@ function M.setup(opts)
     vim.keymap.set('n', 'gT', function()
         M.navigate_tab('previous', vim.v.count1)
     end, { silent = true, desc = 'Previous Vim or Zellij tab' })
+    vim.api.nvim_create_user_command(
+        'NaviPair',
+        M.pair,
+        { desc = 'Pair this Neovim pane with a Zellij pane', force = true }
+    )
+    vim.api.nvim_create_user_command(
+        'NaviJump',
+        M.jump,
+        { desc = 'Jump to the paired Zellij pane', force = true }
+    )
+    vim.api.nvim_create_user_command(
+        'NaviUnpair',
+        M.unpair,
+        { desc = 'Remove this Neovim pane pair', force = true }
+    )
 end
 
 return M

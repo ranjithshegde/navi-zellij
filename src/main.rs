@@ -1,7 +1,10 @@
 //! Headless Zellij plugin that routes shell shortcuts through the key parser.
 
-use navi_zellij::{should_intercept, Effect, KeyRouter, NavAction, ResizeAction};
-use std::collections::BTreeMap;
+use navi_zellij::{
+    is_pairable_terminal, parse_request, should_intercept, Effect, KeyRouter, NavAction,
+    PairRegistry, PairRequest, ResizeAction,
+};
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant};
 use zellij_tile::prelude::*;
 
@@ -19,6 +22,7 @@ struct NaviZellij {
     permission_granted: bool,
     router: KeyRouter,
     pending_since: Option<Instant>,
+    pairs: PairRegistry,
 }
 
 impl NaviZellij {
@@ -82,6 +86,44 @@ impl NaviZellij {
             .map(|(_, actions)| actions.clone())
     }
 
+    /// Return the live terminal IDs needed to validate one pair request.
+    fn live_ids_for(&self, request: PairRequest) -> HashSet<u32> {
+        let candidates = match request {
+            PairRequest::Pair(editor, partner) => vec![editor, partner],
+            PairRequest::Get(editor) => {
+                let mut ids = vec![editor];
+                if let Some(partner) = self.pairs.get(editor) {
+                    ids.push(partner);
+                }
+                ids
+            }
+            PairRequest::Unpair(_) => Vec::new(),
+        };
+        candidates
+            .into_iter()
+            .filter(|id| {
+                get_pane_info(PaneId::Terminal(*id))
+                    .as_ref()
+                    .is_some_and(is_pairable_terminal)
+            })
+            .collect()
+    }
+
+    /// Focus a shell pane's partner, or preserve native last-pane behavior.
+    fn focus_last_or_pair(&mut self) {
+        if let Some(PaneId::Terminal(current)) = self.focused_pane {
+            if let Some(partner) = self.pairs.available_partner(current, |id| {
+                get_pane_info(PaneId::Terminal(id))
+                    .as_ref()
+                    .is_some_and(is_pairable_terminal)
+            }) {
+                focus_pane_with_id(PaneId::Terminal(partner), false, false);
+                return;
+            }
+        }
+        focus_last_pane();
+    }
+
     /// Forward ordinary input or run the parsed Zellij action.
     fn dispatch(&mut self, effect: Effect) {
         match effect {
@@ -105,7 +147,7 @@ impl NaviZellij {
                 NavAction::Close => close_focus(),
                 NavAction::NextPane => focus_next_pane(),
                 NavAction::PreviousPane => focus_previous_pane(),
-                NavAction::LastPane => focus_last_pane(),
+                NavAction::LastPane => self.focus_last_or_pair(),
                 NavAction::Resize(ResizeAction::Grow) => resize_focused_pane(Resize::Increase),
                 NavAction::Resize(ResizeAction::Shrink) => resize_focused_pane(Resize::Decrease),
                 NavAction::Resize(ResizeAction::GrowRight) => {
@@ -191,6 +233,7 @@ impl ZellijPlugin for NaviZellij {
             PermissionType::WriteToStdin,
             PermissionType::InterceptInput,
             PermissionType::RunActionsAsUser,
+            PermissionType::ReadCliPipes,
         ]);
         set_timeout(POLL);
     }
@@ -204,7 +247,18 @@ impl ZellijPlugin for NaviZellij {
                 self.mode = Some(mode);
                 list_clients();
             }
-            Event::PaneUpdate(_) | Event::TabUpdate(_) => list_clients(),
+            Event::PaneUpdate(manifest) => {
+                let live: HashSet<_> = manifest
+                    .panes
+                    .values()
+                    .flatten()
+                    .filter(|pane| is_pairable_terminal(pane))
+                    .map(|pane| pane.id)
+                    .collect();
+                self.pairs.retain_live(&live);
+                list_clients();
+            }
+            Event::TabUpdate(_) => list_clients(),
             Event::ListClients(clients) => self.update_clients(clients),
             Event::PermissionRequestResult(status) => {
                 self.permission_granted = status == PermissionStatus::Granted;
@@ -227,6 +281,33 @@ impl ZellijPlugin for NaviZellij {
             }
             Event::Timer(_) => self.on_prefix_timeout(),
             _ => {}
+        }
+        false
+    }
+
+    fn pipe(&mut self, message: PipeMessage) -> bool {
+        if message.name != "navi-zellij-pair" {
+            return false;
+        }
+        let PipeSource::Cli(ref pipe_id) = message.source else {
+            return false;
+        };
+        let Some(payload) = message.payload.as_deref() else {
+            return false;
+        };
+        let result = parse_request(payload).and_then(|request| {
+            let live = self.live_ids_for(request);
+            self.pairs.apply(request, &live)
+        });
+        match result {
+            Ok(response) => {
+                cli_pipe_output(pipe_id, &response);
+                set_cli_pipe_exit_code(pipe_id, 0);
+            }
+            Err(error) => {
+                cli_pipe_output(pipe_id, &format!("error: {error}\n"));
+                set_cli_pipe_exit_code(pipe_id, 1);
+            }
         }
         false
     }

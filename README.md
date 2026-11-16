@@ -6,8 +6,8 @@ Navi Zellij has two parts:
 
 | Part | What it does |
 | --- | --- |
-| Zellij WASM plugin | Handles Vim-style shortcuts at a shell prompt. It uses your existing Locked-mode bindings and needs no new personal Zellij keybinds. |
-| Neovim Lua module | Moves within Neovim first. At an outer window or tab edge, it asks Zellij to move instead. |
+| Zellij WASM plugin | Handles Vim-style shortcuts at a shell prompt and remembers pane pairs. It uses your existing Locked-mode bindings and needs no new personal Zellij keybinds. |
+| Neovim Lua module | Moves within Neovim first, asks Zellij to move at an outer edge, and provides commands to pair and jump between panes. |
 
 Install both parts for navigation in Neovim and shell panes. The Neovim module also works when Zellij is not running.
 
@@ -56,7 +56,8 @@ For shell shortcuts to be available immediately, set `default_mode "locked"` in 
 | Shell | `Ctrl-w h/j/k/l` | Focus the Zellij pane in that direction |
 | Shell | `Ctrl-w s/v` | Split below/right |
 | Shell | `Ctrl-w c` | Close the focused Zellij pane |
-| Shell | `Ctrl-w w/W/p` | Focus the next/previous/last pane |
+| Shell | `Ctrl-w w/W` | Focus the next/previous pane |
+| Shell | `Ctrl-w p` | Jump to the paired editor, or focus the last pane when unpaired |
 | Shell | `Ctrl-w +/-/</>` | Resize the focused pane |
 | Shell | `gt`, `gT` | Go to the next/previous Zellij tab |
 | Shell | `Ctrl-v g t`, `Ctrl-v g T` | Type `gt` or `gT` literally |
@@ -66,6 +67,20 @@ The first `Ctrl-v` is Navi Zellij's literal-key escape while shell shortcuts are
 
 Only the listed Neovim mappings are added. Other `Ctrl-w` commands keep their native Neovim behavior; in particular, `Ctrl-w c` in Neovim's last window follows Neovim's safe refusal. Counts work within Neovim; crossing a Zellij edge performs one Zellij move. A numbered `gt` selects that Neovim tab.
 
+## Paired panes
+
+Pair your editor with a terminal pane for tests, logs, or an agent:
+
+1. In Neovim, run `:NaviPair` and choose a live terminal pane. The picker shows its tab, title, and pane ID.
+2. Run `:NaviJump` to focus that pane, even if it is on another Zellij tab.
+3. At the paired shell prompt, press `Ctrl-w p` to return to the editor. This works after you visit other panes. In an unpaired shell, `Ctrl-w p` still focuses the last pane.
+
+Run `:NaviUnpair` in Neovim to remove the pair. Choosing a pane that is already paired replaces its old pair; the previous editor will need to pair again.
+
+Pairs belong to Zellij terminal panes and last while the WASM plugin stays loaded. Restarting the plugin or session clears them. No additional keybindings or shell aliases are required.
+
+The commands need both installed parts and Zellij's `ZELLIJ_PANE_ID` environment variable. When upgrading, Zellij may ask you to grant the plugin its new CLI pipe permission.
+
 ## When shell shortcuts are active
 
 The Zellij plugin handles input only in Locked mode, with one attached client focused on a recognized shell. Your existing Locked-mode bindings take priority. When Zellij identifies Neovim or another foreground program, interception stops. If no command can be resolved, shell shortcuts pause.
@@ -74,13 +89,14 @@ Zellij may report the pane’s shell when it cannot inspect a foreground program
 
 Navi Zellij waits up to 180 ms after `g` or `Ctrl-w` for a second key. A lone prefix or an unrecognized sequence is sent to the shell. At a shell prompt, `gt` and `gT` switch Zellij tabs, so use the literal escape above when you need to type those characters.
 
-The plugin requests permission to read and change Zellij state, intercept keys, send keys to the pane, and run your existing bindings. It does not change your Zellij configuration.
+The plugin requests permission to read and change Zellij state, intercept keys, send keys to the pane, run your existing bindings, and handle CLI pipes for paired panes. It does not change your Zellij configuration.
 
 ## Verify
 
 ```sh
 cargo test --locked
 nvim --headless -u NONE -i NONE -l tests/nvim_navigation.lua
+nvim --headless -u NONE -i NONE -l tests/nvim_pairs.lua
 zellij setup --check
 ```
 
