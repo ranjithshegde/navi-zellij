@@ -70,3 +70,7 @@ zellij setup --check
 ```
 
 The plugin requests permissions to read and change Zellij state, intercept input, send ordinary keys back to the pane, and execute your existing bindings. It does not request permission to reconfigure Zellij.
+
+## License
+
+[MIT](LICENSE).
