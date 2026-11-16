@@ -1,0 +1,37 @@
+vim.opt.runtimepath:prepend(vim.fn.getcwd() .. '/nvim')
+local nav = require('navi-zellij')
+local calls = {}
+nav.setup({ run = function(args) table.insert(calls, args) end, in_zellij = function() return true end })
+assert(vim.fn.maparg('<C-w>h', 'n') ~= '')
+assert(vim.fn.maparg('gt', 'n') ~= '')
+assert(vim.fn.maparg('gT', 'n') ~= '')
+assert(vim.fn.maparg('<C-w>c', 'n') == '', 'close must keep native mapping')
+
+vim.opt.splitright = true
+local first = vim.api.nvim_get_current_win()
+vim.cmd.vsplit()
+local second = vim.api.nvim_get_current_win()
+nav.navigate_window('h')
+assert(vim.api.nvim_get_current_win() == first, 'left must move inside Neovim')
+assert(#calls == 0)
+nav.navigate_window('h')
+assert(#calls == 1 and table.concat(calls[1], ' ') == 'zellij action move-focus left', 'left edge must reach Zellij')
+nav.navigate_window('l')
+assert(vim.api.nvim_get_current_win() == second, 'right must move inside Neovim')
+
+vim.cmd.tabnew()
+nav.navigate_tab('previous')
+assert(vim.fn.tabpagenr() == 1, 'gT must use Neovim tab')
+nav.navigate_tab('previous')
+assert(#calls == 2 and table.concat(calls[2], ' ') == 'zellij action go-to-previous-tab')
+nav.navigate_tab('next')
+assert(vim.fn.tabpagenr() == 2, 'gt must use Neovim tab')
+nav.navigate_tab('next')
+assert(#calls == 3 and table.concat(calls[3], ' ') == 'zellij action go-to-next-tab')
+
+nav.setup({ run = function(args) table.insert(calls, args) end, in_zellij = function() return false end })
+nav.navigate_tab('next')
+assert(vim.fn.tabpagenr() == 1, 'outside Zellij native gt wraps')
+assert(#calls == 3)
+
+print('Neovim navigation tests passed')
