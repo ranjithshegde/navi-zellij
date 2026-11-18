@@ -37,11 +37,11 @@ Load the Neovim module **after** your other mappings:
 require('navi-zellij').setup()
 ```
 
-Add the WASM file to `~/.config/zellij/config.kdl`. Replace the example with its **absolute path**. If you already have a `load_plugins` block, add the file URL inside that block.
+Add the WASM file to `~/.config/zellij/config.kdl`. Zellij expands `~` to your home directory in a local plugin URL. If you already have a `load_plugins` block, add the file URL inside that block.
 
 ```kdl
 load_plugins {
-    "file:/home/you/.config/zellij/plugins/navi-zellij.wasm"
+    "file:~/.config/zellij/plugins/navi-zellij.wasm"
 }
 ```
 
@@ -60,11 +60,11 @@ For terminal shortcuts to be available immediately, set `default_mode "locked"` 
 | Shell or terminal app | `Ctrl-w p` | Jump to the paired editor, or focus the last pane when unpaired |
 | Shell or terminal app | `Ctrl-w +/-/</>` | Resize the focused pane |
 | Shell | `gt`, `gT` | Go to the next/previous Zellij tab |
-| Shell | `Ctrl-v g t`, `Ctrl-v g T` | Type `gt` or `gT` literally |
-| Shell | `Ctrl-v Ctrl-v` | Send one native `Ctrl-v` to the shell |
-| Terminal app | `gt`, `gT`, `Ctrl-v` | Go straight to the app, including Claude Code's image paste |
+| Shell | `g`, pause, then `t` or `T` | Type `gt` or `gT` literally |
+| Terminal app | `gt`, `gT` | Go straight to the app |
+| Shell or terminal app | `Ctrl-v` | Go straight to the program, including Claude Code's image paste |
 
-The first `Ctrl-v` is Navi Zellij's literal-key escape only at a shell prompt. Press it twice for the shell's own `Ctrl-v` behavior, such as paste in fish.
+At a shell prompt, pause for at least 180 ms after `g` before typing `t` or `T` to enter those characters literally. `Ctrl-v` is always sent to the program.
 
 Only the listed Neovim mappings are added. Other `Ctrl-w` commands keep their native Neovim behavior; in particular, `Ctrl-w c` in Neovim's last window follows Neovim's safe refusal. Counts work within Neovim; crossing a Zellij edge performs one Zellij move. A numbered `gt` selects that Neovim tab.
 
@@ -88,7 +88,7 @@ The Zellij plugin handles input only in Locked mode, with one attached client fo
 
 If Zellij reports a shell even after checking the foreground command, Navi Zellij can apply shell shortcuts inside another app. This depends on what Zellij can detect on your system.
 
-Navi Zellij waits up to 180 ms after `Ctrl-w` for a second key, and after `g` at a shell prompt. A lone prefix or an unrecognized sequence is sent to the program. This lets a lone `Ctrl-w` retain an app's native action, such as deleting a word in Claude Code, after a short delay. At a shell prompt, `gt` and `gT` switch Zellij tabs, so use the literal escape above when you need to type those characters.
+Navi Zellij waits up to 180 ms after `Ctrl-w` for a second key, and after `g` at a shell prompt. A lone prefix or an unrecognized sequence is sent to the program. This lets a lone `Ctrl-w` retain an app's native action, such as deleting a word in Claude Code, after a short delay. At a shell prompt, `gt` and `gT` switch Zellij tabs when typed within that interval.
 
 The plugin requests permission to read and change Zellij state, intercept keys, send keys to the pane, run your existing bindings, and handle CLI pipes for paired panes and Neovim activity. It does not change your Zellij configuration.
 

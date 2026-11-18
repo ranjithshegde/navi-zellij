@@ -182,25 +182,23 @@ impl NaviZellij {
         if !self.intercepting || self.focused_pane.is_none() {
             return;
         }
-        if !self.router.is_quoting() {
-            if let Some(binding) = self.focused_binding(&key) {
-                for effect in self.router.timeout() {
-                    self.dispatch(effect);
-                }
-                self.pending_since = None;
-                // A mode switch should release interception before Zellij executes it.
-                if binding
-                    .iter()
-                    .any(|a| matches!(a, actions::Action::SwitchToMode { .. }))
-                {
-                    self.stop();
-                }
-                for action in binding {
-                    run_action(action, BTreeMap::new());
-                }
-                list_clients();
-                return;
+        if let Some(binding) = self.focused_binding(&key) {
+            for effect in self.router.timeout() {
+                self.dispatch(effect);
             }
+            self.pending_since = None;
+            // A mode switch should release interception before Zellij executes it.
+            if binding
+                .iter()
+                .any(|a| matches!(a, actions::Action::SwitchToMode { .. }))
+            {
+                self.stop();
+            }
+            for action in binding {
+                run_action(action, BTreeMap::new());
+            }
+            list_clients();
+            return;
         }
         for effect in self.router.handle(key) {
             self.dispatch(effect);

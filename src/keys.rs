@@ -66,7 +66,6 @@ impl Default for KeyRouter {
 enum Pending {
     CtrlW(KeyWithModifier),
     G(KeyWithModifier),
-    QuoteNext,
 }
 
 impl KeyRouter {
@@ -79,22 +78,15 @@ impl KeyRouter {
     }
 
     /// Whether a shortcut prefix needs a timeout before forwarding.
-    ///
-    /// A literal quote waits for the next key without a time limit.
     pub fn is_pending(&self) -> bool {
         matches!(self.pending, Some(Pending::CtrlW(_) | Pending::G(_)))
     }
 
-    /// Whether the plugin should send the next key literally after `Ctrl-v`.
-    pub fn is_quoting(&self) -> bool {
-        matches!(self.pending, Some(Pending::QuoteNext))
-    }
     /// Consume one intercepted key and return effects in delivery order.
     ///
     /// An empty result means the key is buffered as a possible prefix.
     pub fn handle(&mut self, key: KeyWithModifier) -> Vec<Effect> {
         match self.pending.take() {
-            Some(Pending::QuoteNext) => vec![Effect::Forward(key)],
             Some(Pending::CtrlW(prefix)) => match window_action(&key) {
                 Some(action) => vec![Effect::Action(action)],
                 None => vec![Effect::Forward(prefix), Effect::Forward(key)],
@@ -105,10 +97,6 @@ impl KeyRouter {
             },
             None if is_ctrl(&key, 'w') => {
                 self.pending = Some(Pending::CtrlW(key));
-                Vec::new()
-            }
-            None if self.profile == InputProfile::Shell && is_ctrl(&key, 'v') => {
-                self.pending = Some(Pending::QuoteNext);
                 Vec::new()
             }
             None if self.profile == InputProfile::Shell && plain_char(&key) == Some('g') => {
@@ -123,10 +111,6 @@ impl KeyRouter {
     pub fn timeout(&mut self) -> Vec<Effect> {
         match self.pending.take() {
             Some(Pending::CtrlW(key) | Pending::G(key)) => vec![Effect::Forward(key)],
-            Some(Pending::QuoteNext) => {
-                self.pending = Some(Pending::QuoteNext);
-                Vec::new()
-            }
             None => Vec::new(),
         }
     }

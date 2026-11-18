@@ -44,7 +44,7 @@ fn ctrl_w_window_commands_dispatch_the_expected_actions() {
 }
 
 #[test]
-fn shell_tab_keys_and_literal_escape() {
+fn shell_tab_keys_and_paused_literal_text() {
     let mut router = KeyRouter::default();
     assert!(router.handle(key("g")).is_empty());
     assert_eq!(
@@ -57,31 +57,26 @@ fn shell_tab_keys_and_literal_escape() {
         vec![Effect::Action(NavAction::PreviousTab)]
     );
 
-    assert!(router.handle(key("Ctrl v")).is_empty());
-    assert_eq!(router.handle(key("g")), vec![Effect::Forward(key("g"))]);
+    assert!(router.handle(key("g")).is_empty());
+    assert_eq!(router.timeout(), vec![Effect::Forward(key("g"))]);
     assert_eq!(router.handle(key("t")), vec![Effect::Forward(key("t"))]);
 
-    // Press the quote key twice to send one native Ctrl-v to the shell.
-    assert!(router.handle(key("Ctrl v")).is_empty());
+    assert!(router.handle(key("g")).is_empty());
+    assert_eq!(router.timeout(), vec![Effect::Forward(key("g"))]);
     assert_eq!(
-        router.handle(key("Ctrl v")),
-        vec![Effect::Forward(key("Ctrl v"))]
+        router.handle(key("Shift t")),
+        vec![Effect::Forward(key("Shift t"))]
     );
 }
 
 #[test]
-fn literal_quote_waits_for_the_next_key_without_a_prefix_timeout() {
+fn ctrl_v_reaches_the_shell_immediately() {
     let mut router = KeyRouter::default();
-    assert!(router.handle(key("Ctrl v")).is_empty());
-    assert!(router.is_quoting());
-    assert!(
-        !router.is_pending(),
-        "quoting must not start the prefix timer"
+    assert_eq!(
+        router.handle(key("Ctrl v")),
+        vec![Effect::Forward(key("Ctrl v"))]
     );
-    assert!(router.timeout().is_empty());
-    assert!(router.is_quoting(), "a stale timer must not cancel a quote");
-    assert_eq!(router.handle(key("g")), vec![Effect::Forward(key("g"))]);
-    assert_eq!(router.handle(key("t")), vec![Effect::Forward(key("t"))]);
+    assert!(!router.is_pending());
 }
 
 #[test]

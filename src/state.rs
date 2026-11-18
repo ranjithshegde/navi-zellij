@@ -3,7 +3,7 @@ use zellij_tile::prelude::{ClientInfo, InputMode, PaneId};
 /// Which shortcut grammar applies to the focused terminal application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputProfile {
-    /// A shell accepts window, tab, and literal-key shortcuts.
+    /// A shell accepts window and tab shortcuts.
     Shell,
     /// Another terminal app accepts only the `Ctrl-w` window commands.
     App,
